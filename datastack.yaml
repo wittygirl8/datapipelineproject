@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  # S3 Bucket
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'data-bucket-${AWS::AccountId}-${AWS::Region}'
+
+  # Lambda Function IAM Role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaS3Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::data-bucket-${AWS::AccountId}-${AWS::Region}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+
+  # Lambda Function to Create Folders
+  CreateFoldersLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CreateDataS3Folders
+      Handler: index.handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+
+          s3 = boto3.client('s3')
+
+          def handler(event, context):
+              response_data = {}
+              try:
+                  if event['RequestType'] == 'Create':
+                      bucket_name = event['ResourceProperties']['BucketName']
+                      folders = ['athena-queries-output/', 'curated-data/', 'scripts/', 'raw/']
+
+                      for folder in folders:
+                          s3.put_object(Bucket=bucket_name, Key=(folder))
+
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+              except Exception as e:
+                  response_data['Error'] = str(e)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, response_data)
+
+  # Custom Resource to Trigger Lambda for Folder Creation
+  CreateS3FoldersCustomResource:
+    Type: Custom::CreateS3Folders
+    Properties:
+      ServiceToken: !GetAtt CreateFoldersLambdaFunction.Arn
+      BucketName: !Ref DataBucket
+
+Outputs:
+  DataBucketName:
+    Description: "Name of the S3 bucket with folders"
+    Value: !Ref DataBucket
